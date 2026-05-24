@@ -1,0 +1,41 @@
+name: 每週更新建築使用執照資料
+
+on:
+  schedule:
+    - cron: '0 18 * * 0'
+  workflow_dispatch:
+
+jobs:
+  fetch-and-update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 1. 取得 Repo 內容
+        uses: actions/checkout@v4
+
+      - name: 2. 安裝 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 3. 安裝依賴套件
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 4. 執行抓取腳本
+        run: python fetch_data.py
+
+      - name: 5. 提交更新到 Repo
+        run: |
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Actions Bot"
+          git add data/
+          if git diff --staged --quiet; then
+            echo "資料無變化,跳過提交"
+          else
+            git commit -m "🔄 自動更新建築使用執照資料 ($(date '+%Y-%m-%d'))"
+            git push
+          fi
