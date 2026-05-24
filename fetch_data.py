@@ -18,7 +18,10 @@ WENSHAN_KEYWORDS = ['文山區']
 
 NEWTAIPEI_DATASET_ID = 'c1487d7b-fff1-43d3-a2ce-4716eab4d286'
 NEWTAIPEI_API_URL = f'https://data.ntpc.gov.tw/api/datasets/{NEWTAIPEI_DATASET_ID}/json'
-TAIPEI_DOWNLOAD_URL = 'https://data.taipei/api/frontstage/tpeod/dataset/resource.download?rid=0f3f9675-8356-4f1a-9908-1ce8892012fa'
+TAIPEI_HISTORICAL_URL = 'https://data.taipei/api/frontstage/tpeod/dataset/resource.download?rid=0f3f9675-8356-4f1a-9908-1ce8892012fa'  # 歷年(每年更新)
+TAIPEI_CURRENT_URL = 'https://data.taipei/api/frontstage/tpeod/dataset/resource.download?rid=74a8b311-906e-44c4-91fb-7f413842d4e1'  # 115 年度(每月更新)
+# 為了相容舊變數名(可能其他地方有用)
+TAIPEI_DOWNLOAD_URL = TAIPEI_HISTORICAL_URL
 
 OUTPUT_DIR = 'data'
 
@@ -87,52 +90,78 @@ def transform_newtaipei(records):
         })
     return out
 
-# ===== 台北市 v3:深度搜尋 =====
+# ===== 台北市 v4:同時抓「歷年」+「當年度」兩個資料集 =====
 
-def fetch_taipei_data():
-    """v3:用「全文搜尋」找文山,不依賴特定欄位名"""
-    print()
-    print('=' * 60)
-    print('開始抓取台北市建築使用執照 v3...')
-    print('=' * 60)
-
+def fetch_taipei_dataset(url, label):
+    """抓單一台北市 XML 資料集"""
+    print(f'\n  📥 抓取 [{label}] ...')
     try:
-        r = requests.get(TAIPEI_DOWNLOAD_URL, timeout=300, stream=True)
+        r = requests.get(url, timeout=300, stream=True)
         r.raise_for_status()
         content = b''
         for chunk in r.iter_content(chunk_size=1024 * 1024):
             if chunk:
                 content += chunk
-        print(f'  下載完成,{len(content) / 1024 / 1024:.1f} MB')
+        print(f'     下載完成,{len(content) / 1024 / 1024:.2f} MB')
     except Exception as e:
-        print(f'❌ 下載失敗: {e}')
+        print(f'  ❌ [{label}] 下載失敗: {e}')
         return []
 
-    print('  解析 XML...')
     try:
         root = ET.fromstring(content)
     except Exception as e:
-        print(f'❌ XML 解析失敗: {e}')
+        print(f'  ❌ [{label}] XML 解析失敗: {e}')
         return []
 
-    # v3 關鍵:把每個 <Data> 元素「整段轉成字串」,搜尋文山
-    print(f'  共 {len(list(root))} 筆,逐筆搜尋文山...')
+    total = len(list(root))
+    print(f'     XML 共 {total} 筆,逐筆搜尋文山...')
 
-    wenshan_records = []
-    for i, data_elem in enumerate(list(root)):
-        # 把這個 <Data> 整段轉成 XML 字串
+    wenshan = []
+    for data_elem in list(root):
         full_text = ET.tostring(data_elem, encoding='unicode')
         if any(kw in full_text for kw in WENSHAN_KEYWORDS):
-            # 找到文山! 把這筆深度展開成 dict
             item = extract_deep(data_elem)
-            wenshan_records.append(item)
+            wenshan.append(item)
 
-    print(f'\n✅ 台北市完成:文山區 {len(wenshan_records)} 筆 (從 {len(list(root))} 筆中)')
+    print(f'     ✅ [{label}] 文山區 {len(wenshan)} 筆 (從 {total} 筆中)')
+    return wenshan
 
-    # 印出第一筆文山的完整內容(供確認)
-    if wenshan_records:
-        print(f'\n  第一筆文山資料的所有欄位:')
-        for k, v in list(wenshan_records[0].items())[:30]:
+
+def fetch_taipei_data():
+    """v4:同時抓歷年 + 當年度,合併去重後回傳"""
+    print()
+    print('=' * 60)
+    print('開始抓取台北市建築使用執照 v4 (歷年 + 當年度)...')
+    print('=' * 60)
+
+    # 抓歷年資料 (每年更新一次,2025 前)
+    historical = fetch_taipei_dataset(TAIPEI_HISTORICAL_URL, '歷年使照摘要')
+
+    # 抓當年度資料 (每月更新,2026)
+    current = fetch_taipei_dataset(TAIPEI_CURRENT_URL, '115 年度使照摘要')
+
+    # 合併:用「執照號碼」當 unique key 去重
+    # 因為歷年資料可能跟當年度有部分重疊(政府資料更新時間差)
+    merged = {}
+    for item in historical + current:
+        license_no = item.get('執照號碼', '')
+        if license_no:
+            merged[license_no] = item
+        else:
+            # 沒執照號碼的用 id 隨機
+            merged[f'_no_id_{len(merged)}'] = item
+
+    wenshan_records = list(merged.values())
+
+    print(f'\n✅ 台北市彙整完成:')
+    print(f'   - 歷年:    {len(historical)} 筆')
+    print(f'   - 當年度:  {len(current)} 筆')
+    print(f'   - 合併去重後: {len(wenshan_records)} 筆')
+
+    # 印出第一筆當年度資料(如果有的話)供確認
+    if current:
+        print(f'\n  最新一筆(115 年度)的所有欄位:')
+        for k, v in list(current[0].items())[:30]:
             v_preview = str(v)[:60] if v else ''
             print(f'    {k}: {v_preview}')
 
